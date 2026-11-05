@@ -14,7 +14,7 @@ class MonoLogger:
             path = os.path.join(os.getcwd(), name + ".logs")
         self.path = path
         if not os.path.exists(self.path):
-            os.mkdir(self.path)
+            os.makedirs(self.path, exist_ok=True)
         elif not os.path.isdir(self.path):
             raise ValueError("log path should be a directory")
         self._debug = logging.getLogger(self.name + "-debug")
@@ -25,15 +25,15 @@ class MonoLogger:
         self.setLevel(level)
 
         self._console_hdlr = logging.StreamHandler()
-        self._debug_hdlr = logging.FileHandler(os.path.join(self.path, "debug.log"), mode='w', encoding="utf-8")
+        self._debug_hdlr = logging.FileHandler(os.path.join(self.path, "debug.log"), mode='a', encoding="utf-8")
         self._debug.addHandler(self._debug_hdlr)
-        self._info_hdlr = logging.FileHandler(os.path.join(self.path, "info.log"), mode='w', encoding="utf-8")
+        self._info_hdlr = logging.FileHandler(os.path.join(self.path, "info.log"), mode='a', encoding="utf-8")
         self._info.addHandler(self._info_hdlr)
-        self._warning_hdlr = logging.FileHandler(os.path.join(self.path, "warning.log"), mode='w', encoding="utf-8")
+        self._warning_hdlr = logging.FileHandler(os.path.join(self.path, "warning.log"), mode='a', encoding="utf-8")
         self._warning.addHandler(self._warning_hdlr)
-        self._error_hdlr = logging.FileHandler(os.path.join(self.path, "error.log"), mode='w', encoding="utf-8")
+        self._error_hdlr = logging.FileHandler(os.path.join(self.path, "error.log"), mode='a', encoding="utf-8")
         self._error.addHandler(self._error_hdlr)
-        self._critical_hdlr = logging.FileHandler(os.path.join(self.path, "critical.log"), mode='w', encoding="utf-8")
+        self._critical_hdlr = logging.FileHandler(os.path.join(self.path, "critical.log"), mode='a', encoding="utf-8")
         self._critical.addHandler(self._critical_hdlr)
         self.setFormatter(formatter)
         self.toConsole(to_console)
@@ -100,13 +100,17 @@ class MonoLogger:
         self._critical_hdlr.setFormatter(formatter)
 
     def setLevel(self, level: str|int):
-        level = str.upper(level)
-        self._level = level
-        self._debug.setLevel(level)
-        self._info.setLevel(level)
-        self._warning.setLevel(level)
-        self._error.setLevel(level)
-        self._critical.setLevel(level)
+        if isinstance(level, int):
+            logger_level = level
+            self._level = logging.getLevelName(level)
+        else:
+            logger_level = str(level).upper()
+            self._level = logger_level
+        self._debug.setLevel(logger_level)
+        self._info.setLevel(logger_level)
+        self._warning.setLevel(logger_level)
+        self._error.setLevel(logger_level)
+        self._critical.setLevel(logger_level)
 
     def getLevel(self):
         return self._level
@@ -133,11 +137,9 @@ class MonoLogger:
             return MonoLogger(name)
 
     def __del__(self):
-        self._debug_hdlr.close()
-        self._info_hdlr.close()
-        self._warning_hdlr.close()
-        self._error_hdlr.close()
-        self._critical_hdlr.close()
-        MonoLogger._logger_map.pop(self.name)
+        for handler in (self._debug_hdlr, self._info_hdlr, self._warning_hdlr,
+                        self._error_hdlr, self._critical_hdlr):
+            handler.close()
+        MonoLogger._logger_map.pop(self.name, None)
 
 logger = MonoLogger(name="root",path="./logs",to_console=False, level="DEBUG")

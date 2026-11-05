@@ -23,7 +23,7 @@ def showImage(img, show_in_terminal=False, ensure_unicode=False):
     else:
         import threading
         img = Image.open(io.BytesIO(img))
-        threading.Thread(target=img.show).run()
+        threading.Thread(target=img.show, daemon=True).start()
     print("Scan QR code")
 
 def terminalShowImage_unicode(img):
@@ -67,7 +67,9 @@ def getDir():
     return os.path.dirname(os.path.realpath(__file__))
 
 def getConfigPath():
-    return os.path.join(getDir(), 'config.json')
+    config_dir = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'fuckZHS')
+    os.makedirs(config_dir, exist_ok=True)
+    return os.path.join(config_dir, 'config.json')
 
 def getRealPath(path: str):
     path = os.path.expanduser(path)
@@ -88,7 +90,7 @@ def versionCmp(v1:str, v2:str) -> int:
 
 def wipeLine():
     try:
-        width = os.get_terminal_size().columns
+        width = os.get_terminal_size(sys.stdout.fileno()).columns
     except OSError:  # Fix for PyCharm in Windows
         width = 80
     print('\r' + ' ' * (width), end = '\r', flush=True)
@@ -109,9 +111,11 @@ def progressBar (iteration, total, prefix = '', suffix = '', decimals = 1,
         return False
     if not length:
         try:
-            length = os.get_terminal_size().columns - 4
+            length = os.get_terminal_size(sys.stdout.fileno()).columns - 4
         except OSError:  # Fix for PyCharm in Windows
             length = 76
+    if total <= 0:
+        raise ValueError("total must be greater than zero")
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     prefix = f"{prefix} |"
     suffix = f"| {percent}% {suffix}"

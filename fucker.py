@@ -23,10 +23,12 @@ import time
 import json
 import re
 import os
-from urllib.parse import urlparse
+import tempfile
+from urllib.parse import urljoin, urlparse, unquote as url_unquote
 from urllib.parse import urlencode, parse_qsl, urlsplit, urlunsplit
 from pathlib import Path
 from openai import OpenAI
+import httpx
 import threading
 import ast
 import hashlib
@@ -79,11 +81,11 @@ class Fucker:
         * `end_thre`: float, optional, threshold to stop the fucker, overloaded when there are questions left unanswered
         * `tree_view` :bool, optional, print the tree progress view of the course
         """
-        logger.debug(f"created a Fucker {id(self)}, limit: {limit}, speed: {speed}, end_thre: {end_thre}")
+        logger.debug(f"created a Fucker, limit: {limit}, speed: {speed}, end_thre: {end_thre}")
 
         self.uuid = None # actually it's not a uuid, but a random string
         self.cookies = cookies or {}
-        self.proxies = proxies or urllib.request.getproxies() # explicitly use system proxy
+        self.proxies = proxies if proxies is not None else urllib.request.getproxies() # explicitly use system proxy
         self.headers = headers or {
             "Accept": "*/*",
             "sec-ch-ua": "\" Not A;Brand\";v=\"99\", \"Chromium\";v=\"101\", \"Google Chrome\";v=\"101\"",
@@ -101,8 +103,6 @@ class Fucker:
         self.session.mount('http://', HTTPAdapter(max_retries=retry))
         self.session.mount('https://', HTTPAdapter(max_retries=retry))
 
-        logger.debug(f'proxies: {self.proxies}')
-        logger.debug(f'headers: {self.headers}')
 
         self.limit = abs(limit)                    # time limit for fucking, in minutes
         self.speed = speed and max(speed, 0.1)     # video play speed, Falsy values for default
@@ -128,14 +128,12 @@ class Fucker:
             cookies = list_to_cookie_jar(cookies)
         
         self._cookies = cookies
-        logger.debug(f'received cookies: {self.cookies}')
         if cookies:
             try:
                 self.uuid = json.loads(unquote(cookies["CASLOGC"]))["uuid"]
                 self._cookies[f"exitRecod_{self.uuid}"] = "2"
             except KeyError:
                 raise ValueError("Cookies invalid")
-        logger.debug(f"set cookies: {self._cookies}")
 
     def login(self, username: str=None, password: str=None, interactive: bool=True, use_qr:bool=False, qr_callback: callable=None):
         """* `interactive`: whether to use interactive mode to login"""
@@ -194,8 +192,8 @@ class Fucker:
 
             logger.info("Login successful")
         except Exception as e:
-            logger.exception(e)
-            raise Exception(f"Login failed: {e}")
+            logger.error(f"Operation failed: {type(e).__name__}")
+            raise Exception(f"Login failed ({type(e).__name__})") from None
 
     def _qrlogin(self, qr_callback):
         """Login using qr code"""
@@ -204,7 +202,7 @@ class Fucker:
         query_page = "https://passport.zhihuishu.com/qrCodeLogin/getLoginQrInfo"
         self._sessionReady()
         try:
-            r = self.session.get(qr_page, timeout=10).json()
+            r = self.session.get(qr_page, proxies=self.proxies, timeout=10).json()
             qrToken = r["qrToken"]
             img = b64decode(r["img"])
             if self.image_path != "": # 路径非空时保存图片到指定路径
@@ -213,12 +211,12 @@ class Fucker:
                     f.write(img)
                 logger.info(f"图片已保存至{image_path}")
             qr_callback(img)
-            logger.debug(f"QR login received, token{qrToken}")
+            logger.debug("QR login code received")
             scanned = False
             while True:
                 time.sleep(0.5)
                 msg = ObjDict(
-                    self.session.get(query_page, params={"qrToken":qrToken}, timeout=10).json(),
+                    self.session.get(query_page, params={"qrToken":qrToken}, proxies=self.proxies, timeout=10).json(),
                     default=None)
                 match msg.status:
                     case -1:
@@ -248,8 +246,8 @@ class Fucker:
         except TimeLimitExceeded:
             self._qrlogin(qr_callback) # timeout? try again!
         except Exception as e:
-            logger.exception(e)
-            raise Exception(f"QR login failed: {e}")
+            logger.error(f"Operation failed: {type(e).__name__}")
+            raise Exception(f"QR login failed ({type(e).__name__})") from None
 
 #    def _qrlogin(self, qr_callback):
 #        """Login using qr code"""
@@ -292,7 +290,7 @@ class Fucker:
 #        except TimeLimitExceeded:
 #            self._qrlogin(qr_callback) # timeout? try again!
 #        except Exception as e:
-#            logger.exception(e)
+#            logger.error(f"Operation failed: {type(e).__name__}")
 #            raise Exception(f"QR login failed: {e}")
 
     def fuckWhatever(self):
@@ -302,14 +300,14 @@ class Fucker:
             try:
                 self.fuckZhidaoCourse(i)
             except Exception as e:
-                logger.exception(e)
+                logger.error(f"Video initialization failed: {type(e).__name__}")
                 continue
         hike_ids = [c.courseId for c in self.getHikeList()]
         for i in hike_ids:
             try:
                 self.fuckHikeCourse(i)
             except Exception as e:
-                logger.exception(e)
+                logger.error(f"Operation failed: {type(e).__name__}")
                 continue
 
     def fuckCourse(self, course_id:str):
@@ -445,7 +443,7 @@ class Fucker:
         prefix = self.prefix # prefix for tree-like print
         try:
             # 在 nohup 下运行无法获取，进行捕获
-            w_lim = os.get_terminal_size().columns-1 # width limit for terminal output
+            w_lim = os.get_terminal_size().columns - 1 # width limit for terminal output
         except Exception as e:
             # 考虑直接移除此变量，但是保留原代码风格，故进行赋值
             w_lim = 80
@@ -461,7 +459,7 @@ class Fucker:
                         try:
                             self.fuckZhidaoVideo(RAC_id, video.videoId)
                         except TimeLimitExceeded as e:
-                            logger.info(f"Fucking time limit exceeded: {e}")
+                            logger.info("Course time limit reached")
                             self._pushplus("fuckZHS","刷课已完成")
                             self._bark("fuckZHS","刷课已完成")
                             tprint(prefix)
@@ -475,7 +473,7 @@ class Fucker:
                             tprint(f"{prefix}##Captcha required\a\n")
                             return
                         except Exception as e:
-                            logger.exception(e)
+                            logger.error(f"Operation failed: {type(e).__name__}")
                             self._pushplus("fuckZHS",e)
                             self._bark("fuckZHS",e)
                             tprint(f"{prefix*3}##Failed: {e}"[:w_lim])
@@ -564,7 +562,7 @@ class Fucker:
                     answer = 2    # answer delay time
                     report = True # set report flag
                 except Exception as e:
-                    logger.error(f"can't get question detail:\n{e}")
+                    logger.error(f"Can't get question detail ({type(e).__name__})")
             ## answer questions
             if answer is not None:
                 if answer == 0:
@@ -611,8 +609,7 @@ class Fucker:
             # somehow their timestamps are ending with 000
             _t = int(time.time())*1000
             data["dateFormate"] = _t
-        logger.debug(
-            f"{method} url: {url}\nraw_data: {json.dumps(data,indent=4,ensure_ascii=False)}")
+        logger.debug(f"{method} url: {url} (request payload redacted)")
         form = {"secretStr": cipher.encrypt(
             json.dumps(data))} if encrypt else data
 
@@ -630,9 +627,8 @@ class Fucker:
                 case -12:
                     e = CaptchaException("captcha required")
                 case _:
-                    e = Exception(f"code: {ret.code} " +
-                                  f"msg: {ret.message or json.dumps(ret,indent=4,ensure_ascii=False)}")
-            logger.error(e)
+                    e = Exception(f"API response code {ret.code}")
+            logger.error(f"Request failed: {type(e).__name__}")
             raise e
         return ret
 
@@ -950,7 +946,7 @@ class Fucker:
         tprint = print if self.tree_view else lambda *a, **k: None
         try:
             # 在 nohup 下运行无法获取，进行捕获
-            w_lim = os.get_terminal_size().columns-1 # width limit for terminal output
+            w_lim = os.get_terminal_size().columns - 1 # width limit for terminal output
         except Exception as e:
             # 考虑直接移除此变量，但是保留原代码风格，故进行赋值
             w_lim = 80
@@ -985,7 +981,7 @@ class Fucker:
                 tprint(f"{prefix}##Time limit exceeded: {e}")
             except Exception as e:
                 logger.error(f"Failed to fuck file {file.id} of course {course_id}")
-                logger.exception(e)
+                logger.error(f"Operation failed: {type(e).__name__}")
                 tprint(f"{prefix}##Failed: {e}"[:w_lim])
 
     def hikeQuery(self, url:str, data:dict,sig:bool=False, ok_code:int=200,
@@ -1000,8 +996,8 @@ class Fucker:
         ret = self._apiQuery(url, data, method=method)
         if ok_code is not None and int(ret.status) != ok_code:
             ret.default = None
-            e = Exception(f"{ret.status} {ret.message or json.dumps(ret,indent=4,ensure_ascii=False)}")
-            logger.error(e)
+            e = Exception(f"API response status {ret.status}")
+            logger.error(f"Request failed: {type(e).__name__}")
             raise e
         return ret
 
@@ -1047,29 +1043,38 @@ class Fucker:
         cookies = self.session.cookies.copy()
         parse_url = "https://newbase.zhihuishu.com/video/initVideo"
         def watch():
-            # get video link
-            r = requests.get(parse_url, params={
-                                "jsonpCallBack": "result",
-                                "videoID": str(video_id),
-                                "_": int(time.time()*1000)
-                            },
-                            cookies=cookies, headers=headers, proxies=self.proxies, timeout=10)
-            r = re.match(r"^result\((.*)\)$",r.text).group(1)
-            url = ObjDict(json.loads(r)).result.lines[0].lineUrl
             try:
-                requests.get(url, headers=headers, cookies=cookies, proxies=self.proxies)
+                r = requests.get(parse_url, params={
+                                    "jsonpCallBack": "result",
+                                    "videoID": str(video_id),
+                                    "_": int(time.time()*1000)
+                                },
+                                cookies=cookies, headers=headers, proxies=self.proxies, timeout=10)
+                r.raise_for_status()
+                match = re.match(r"^result\((.*)\)$", r.text)
+                if not match:
+                    raise ValueError("Unexpected video initialization response")
+                url = ObjDict(json.loads(match.group(1))).result.lines[0].lineUrl
+                video_url = urlparse(url)
+                video_host = (video_url.hostname or "").lower().rstrip(".")
+                if (video_url.scheme.lower() != "https" or video_url.username
+                        or video_url.password or not video_host
+                        or not (video_host == "zhihuishu.com"
+                                or video_host.endswith(".zhihuishu.com"))):
+                    raise ValueError("Untrusted video URL")
+                video_response = requests.get(
+                    url, headers=headers, cookies=cookies,
+                    proxies=self.proxies, timeout=15)
+                video_response.raise_for_status()
             except Exception as e:
                 logger.error(f"Failed to watch video {video_id}")
-                logger.exception(e)
+                logger.error(f"Operation failed: {type(e).__name__}")
         watch_thread = Thread(target=watch)
         watch_thread.start()
 
     def _apiQuery(self, url: str, data: dict, method: str = "POST", contentType: str = "form"):
         method = method.upper()
-        logger.debug(f"{method} url: {url}\ndata: {json.dumps(data,indent=4,ensure_ascii=False)}\n" +
-                     f"headers: {json.dumps(self.headers, indent=4)}\n" +
-                     f"cookies: {self.session.cookies}\n" +
-                     f"proxies: {json.dumps(self.session.proxies, indent=4)}")
+        logger.debug(f"{method} url: {url} (request payload and credentials redacted)")
         match method:
             case "POST":
                 # set content-type
@@ -1090,16 +1095,15 @@ class Fucker:
                     url, params=data, proxies=self.proxies, timeout=10)
             case _:
                 e = ValueError(f"Unsupport method: {method}")
-                logger.error(e)
+                logger.error(f"Request failed: {type(e).__name__}")
                 raise e
         ret = ObjDict(r.json())
-        logger.debug(json.dumps(ret, indent=4, ensure_ascii=False))
         return ret
 
     def _checkCookies(self):
         if not self._cookies:
             e = Exception("No cookies found, please login first")
-            logger.error(e)
+            logger.error(f"Request failed: {type(e).__name__}")
             raise e
 
     def _checkTimeLimit(self, cid):
@@ -1177,7 +1181,7 @@ class Fucker:
                 url, data, ok_code=200, key=AI_KEY, contentType="json").data
             return True
         except Exception as e:
-            logger.exception(e)
+            logger.error(f"Operation failed: {type(e).__name__}")
             return False
 
     def listKnowledgeResources(self, courseId: int, classId: int, knowledgeId: int):
@@ -1214,7 +1218,7 @@ class Fucker:
             return ret
 
         except Exception as e:
-            logger.exception(e)
+            logger.error(f"Operation failed: {type(e).__name__}")
             return None
 
     def fuckAiVideo(self, courseId: int, classId: int, fileId: int, knowledgeId: int, watchUId: int = 1, startAt: int = 0):
@@ -1233,7 +1237,7 @@ class Fucker:
                 url, data, ok_code=200, key=AI_KEY, contentType="json").data
             video_length = ret[0].time
         except Exception as e:
-            logger.exception(e)
+            logger.error(f"Operation failed: {type(e).__name__}")
             raise Exception("Failed to get video length")
 
         self.watchVideo(fileId)
@@ -1248,7 +1252,7 @@ class Fucker:
                 self.reportAiVideoProcess(
                     courseId, classId, fileId, knowledgeId, played_time, watchUId=watchUId)
             except Exception as e:
-                logger.exception(e)
+                logger.error(f"Operation failed: {type(e).__name__}")
 
             time.sleep(2)
 
@@ -1276,11 +1280,14 @@ class Fucker:
 
             begin_time = time.time()  # real world time
             prefix = self.prefix  # prefix for tree-like print
-            w_lim = os.get_terminal_size().columns-1  # width limit for terminal output
+            try:
+                w_lim = os.get_terminal_size().columns - 1  # width limit for terminal output
+            except OSError:
+                w_lim = 79
 
             cakeThemeList = knowledgePoints.cakeThemeList
         except Exception as e:
-            logger.exception(e)
+            logger.error(f"Operation failed: {type(e).__name__}")
             raise Exception("Failed to get knowledge points")
 
         # 遍历主题
@@ -1291,7 +1298,7 @@ class Fucker:
             try:
                 knowledgeList = theme.knowledgeList
             except Exception as e:
-                logger.exception(e)
+                logger.error(f"Operation failed: {type(e).__name__}")
                 tprint(prefix*2)
                 tprint(
                     f"{prefix*2}__Theme {theme.themeName} has no knowledge points")
@@ -1313,7 +1320,7 @@ class Fucker:
                             courseId, classId, knowledge.knowledgeId)
                         resourceList = resources.resourceList
                     except Exception as e:
-                        logger.exception(e)
+                        logger.error(f"Operation failed: {type(e).__name__}")
                         tprint(prefix*3)
                         tprint(
                             f"{prefix*3}__Failed to get resources for knowledge point {knowledge.knowledgeName}")
@@ -1363,7 +1370,7 @@ class Fucker:
                                         "url": pptUrl
                                     })
                             except Exception as e:
-                                logger.exception(e)
+                                logger.error(f"Operation failed: {type(e).__name__}")
                                 tprint(prefix*4)
                                 tprint(
                                     f"{prefix*4}__Failed to fuck text/ppt resource {resource.resourcesDetail.resourcesName}")
@@ -1375,7 +1382,7 @@ class Fucker:
                                 tprint(
                                     f"{prefix*4}__Fucked video {resource.resourcesDetail.resourcesName}")
                             except Exception as e:
-                                logger.exception(e)
+                                logger.error(f"Operation failed: {type(e).__name__}")
                                 tprint(prefix*4)
                                 tprint(
                                     f"{prefix*4}__Failed to fuck video {resource.resourcesDetail.resourcesName}, {e}")
@@ -1388,7 +1395,7 @@ class Fucker:
                                 tprint(
                                     f"{prefix*4}__Fucked Zhihuishu course video {resource.resourcesDetail.resourcesName}")
                             except Exception as e:
-                                logger.exception(e)
+                                logger.error(f"Operation failed: {type(e).__name__}")
                                 tprint(prefix*4)
                                 tprint(
                                     f"{prefix*4}__Failed to fuck Zhihuishu course video {resource.resourcesDetail.resourcesName}, {e}")
@@ -1400,7 +1407,7 @@ class Fucker:
                                 tprint(
                                     f"{prefix*4}__Resource type is {resourceType}, distribute type is {resourceDistributeType}, fucked")
                             except Exception as e:
-                                logger.exception(e)
+                                logger.error(f"Operation failed: {type(e).__name__}")
                                 tprint(
                                     f"{prefix*4}__Failed to fuck resource {resource.resourcesDetail.resourcesName}, {e}")
                             continue
@@ -1415,7 +1422,7 @@ class Fucker:
                                 courseId, classId, knowledge.knowledgeId)
                             resourceList = resources.resourceList
                         except Exception as e:
-                            logger.exception(e)
+                            logger.error(f"Operation failed: {type(e).__name__}")
                             tprint(prefix*3)
                             tprint(
                                 f"{prefix*3}__Failed to get resources for knowledge point {knowledge.knowledgeName}")
@@ -1483,7 +1490,10 @@ class Fucker:
 
                     # 将ppt转为text
                     if ppt_conf.get("provide_to_ai", False) and moonShot_conf.get("api_key", ""):
-                        ppt2txt = PptToTxt(moonShotKey=moonShot_conf.get("api_key", ""),baseUrl=moonShot_conf.get("base_url","https://api.moonshot.cn/v1"))
+                        ppt2txt = PptToTxt(
+                            moonShotKey=moonShot_conf.get("api_key", ""),
+                            baseUrl=moonShot_conf.get("base_url", "https://api.moonshot.cn/v1"),
+                            proxies=self.proxies)
                         for ppt in ppts:
                             try:
                                 content = ppt2txt.parseTxt(ppt["url"])
@@ -1492,7 +1502,7 @@ class Fucker:
                                 tprint(
                                     f"{prefix*4}__Converted ppt {ppt['name']} to text")
                             except Exception as e:
-                                logger.exception(e)
+                                logger.error(f"Operation failed: {type(e).__name__}")
                                 tprint(prefix*4)
                                 tprint(
                                     f"{prefix*4}__Failed to convert ppt {ppt['name']}, {e}")
@@ -1545,6 +1555,7 @@ class ExamCtx:
                 modelName=opConf.get("model_name", "davinci"),
                 stream=aiConfig.get("use_stream", False),
                 extra=opExtra,
+                proxies=fucker.proxies,
             )
 
         if aiConfig.get("enabled", False) and aiConfig.get("use_zhidao_ai", False):
@@ -1699,7 +1710,7 @@ class ExamCtx:
                 ret = self.fucker.zhidaoAiExamQuery(
                     url, data, ok_code=0, key=EXAM_KEY, method="POST")
             except Exception as e:
-                logger.error(f"updateExamCostTime failed: {e}")
+                logger.error(f"updateExamCostTime failed: {type(e).__name__}")
             finally:
                 self.timeUpdateIndex += 1
                 if self.timeUpdateIndex % 10 == 0:
@@ -1723,7 +1734,7 @@ class ExamCtx:
                 url, data, ok_code=0, key=EXAM_KEY, method="GET")
             self.sheetContent = ret["data"]["partSheetVos"][0]["questionSheetVos"]
         except Exception as e:
-            logger.error(f"getSheetContent failed: {e}")
+            logger.error(f"getSheetContent failed: {type(e).__name__}")
 
             if triedTimes < 3:
                 logger.error(
@@ -1777,7 +1788,7 @@ class ExamCtx:
             ret = self.fucker.zhidaoAiExamQuery(
                 url, data, ok_code=0, key=EXAM_KEY, method="POST")
         except Exception as e:
-            logger.error(f"saveAnswer failed: {e}")
+            logger.error(f"saveAnswer failed: {type(e).__name__}")
             return False
 
         return True
@@ -1797,7 +1808,7 @@ class ExamCtx:
             ret = self.fucker.zhidaoAiExamQuery(
                 url, data, ok_code=0, key=EXAM_KEY, method="POST")
         except Exception as e:
-            logger.error(f"submitExam failed: {e}")
+            logger.error(f"submitExam failed: {type(e).__name__}")
             if triedTimes < 3:
                 logger.error(
                     f"submitExam failed, retrying... {triedTimes} times")
@@ -1896,7 +1907,7 @@ class ExamCtx:
         # 遍历试卷内容，获取每道题目的答案
         index = 0
         total_questions = len(sheetContent)
-        if self.progress_view :
+        if self.progress_view and total_questions > 0:
             progressBar(index, total_questions, "fucking exam",
                         suffix=f"{index}/{total_questions}")
         for questionDict in sheetContent:
@@ -1921,7 +1932,7 @@ class ExamCtx:
             # 保存答案
             self.saveAnswer(questionDict["questionId"], answer)
 
-            if self.progress_view :
+            if self.progress_view and total_questions > 0:
                 action = f"fucking exam"
                 index += 1
                 progressBar(index, total_questions, action,
@@ -1986,7 +1997,7 @@ class ExamCtx:
             return False, correct_questions, total_questions
 
 class Openai:
-    def __init__(self, baseUrl: str = "", apiKey: str = "", modelName: str = "", useZhidao: bool = False, zhiDaosession: requests.Session = None, stream: bool = False, extra: dict = {}):
+    def __init__(self, baseUrl: str = "", apiKey: str = "", modelName: str = "", useZhidao: bool = False, zhiDaosession: requests.Session = None, stream: bool = False, extra: dict = {}, proxies: dict = None):
         self.baseUrl = baseUrl
         self.apiKey = apiKey
         self.modelName = modelName
@@ -1995,9 +2006,14 @@ class Openai:
         self.stream = stream
 
         self.session = zhiDaosession if zhiDaosession is not None else requests.Session()
+        if proxies is not None:
+            self.session.proxies.update(proxies)
         self.useZhidao = useZhidao
 
-        self.encoder = tiktoken.encoding_for_model("gpt-4")
+        try:
+            self.encoder = tiktoken.encoding_for_model("gpt-4")
+        except KeyError:
+            self.encoder = tiktoken.get_encoding("cl100k_base")
 
         self.prefix = "8ZflKEagfL"
 
@@ -2023,7 +2039,7 @@ class Openai:
                 continue
 
     def openaiCompletion(self, prompt: str, aimStart: str = "```answer", aimEnd: str = "```", max_retries: int = 3, retry_delay: float = 1.0) -> str:
-        url = f"{self.baseUrl}/v1/chat/completions"
+        url = f"{self.baseUrl.rstrip('/')}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.apiKey}",
@@ -2038,7 +2054,8 @@ class Openai:
         for attempt in range(max_retries):
             try:
                 response = requests.post(
-                    url, headers=headers, json=body, timeout=30, stream=self.stream)
+                    url, headers=headers, json=body, timeout=30, stream=self.stream,
+                    proxies=self.session.proxies)
                 response.raise_for_status()
 
                 if self.stream:
@@ -2179,8 +2196,9 @@ class Openai:
         tokens = self.encoder.encode(prompt)
 
         # 如果大于32ktoken，取后32ktoken
-        if len(tokens) > 27.900 * 1000:
-            tokens = tokens[-27.900 * 1000:]
+        token_limit = 27_900
+        if len(tokens) > token_limit:
+            tokens = tokens[-token_limit:]
 
             prompt = self.encoder.decode(tokens)
             logger.warning(
@@ -2222,13 +2240,19 @@ class Openai:
         return answers
 
 class PptToTxt:
-    def __init__(self, moonShotKey,baseUrl="https://api.moonshot.cn/v1", max_file_size_mb=100, max_cache_files=500, max_cache_size_gb=8, delete_immediately=False):
+    def __init__(self, moonShotKey, baseUrl="https://api.moonshot.cn/v1", max_file_size_mb=100, max_cache_files=500, max_cache_size_gb=8, delete_immediately=False, proxies=None):
         self.__moonShotKey = moonShotKey 
         self.__session = requests.Session()
+        self.__proxies = proxies or {}
+        self.__session.proxies.update(self.__proxies)
         self.__download_path = getRealPath("AiDownloadCache")
+        proxy_url = (self.__proxies.get("https") or self.__proxies.get("http")
+                     or self.__proxies.get("all"))
+        http_client = httpx.Client(proxy=proxy_url) if proxy_url else httpx.Client()
         self.__client = OpenAI(
             api_key=self.__moonShotKey,
-            base_url="https://api.moonshot.cn/v1",
+            base_url=baseUrl,
+            http_client=http_client,
         )
         self.__max_file_size = max_file_size_mb * 1024 * 1024  # Convert to bytes
         self.__max_cache_files = max_cache_files
@@ -2260,13 +2284,12 @@ class PptToTxt:
             self.__manage_cache()
             return text_content
         except Exception as e:
-            logger.error(f"Error processing file from URL {url}: {str(e)}")
+            logger.error(f"Error processing course resource: {type(e).__name__}")
             return ""
 
     def __getFilePath(self, url: str) -> str:
-        parsed_url = urlparse(url)
-        file_path = parsed_url.path.lstrip('/')
-        local_path = os.path.join(self.__download_path, file_path)
+        parsed_url = self.__validateDownloadUrl(url)
+        local_path = self.__getCachePath(parsed_url)
 
         if os.path.exists(local_path):
             logger.info(f"File already exists: {local_path}")
@@ -2275,22 +2298,80 @@ class PptToTxt:
         return self.__downloadFile(url)
 
     def __downloadFile(self, url: str) -> str:
-        response = self.__session.get(url, stream=True)
-        if response.status_code == 200:
-            parsed_url = urlparse(url)
-            file_path = parsed_url.path.lstrip('/')
-            local_path = os.path.join(self.__download_path, file_path)
+        current_url = url
+        for _ in range(6):
+            parsed_url = self.__validateDownloadUrl(current_url)
+            response = self.__session.get(
+                current_url, stream=True, timeout=30, allow_redirects=False)
+            if response.is_redirect:
+                redirect_url = response.headers.get("Location")
+                response.close()
+                if not redirect_url:
+                    raise requests.exceptions.HTTPError("Redirect has no location")
+                current_url = urljoin(current_url, redirect_url)
+                self.__validateDownloadUrl(current_url)
+                continue
+            response.raise_for_status()
+            if response.status_code != 200:
+                raise requests.exceptions.HTTPError(
+                    f"Unexpected download status: {response.status_code}")
 
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-
-            with open(local_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
+            local_path = self.__getCachePath(parsed_url)
+            cache_directory = os.path.dirname(local_path)
+            os.makedirs(cache_directory, exist_ok=True)
+            # Resolve again after directory creation to reject symlink/junction
+            # components that could redirect cache writes outside the cache.
+            local_path = self.__getCachePath(parsed_url)
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                        mode="wb", dir=cache_directory, prefix=".ppt-",
+                        delete=False) as f:
+                    temp_path = f.name
+                    downloaded_size = 0
+                    for chunk in response.iter_content(chunk_size=8192):
+                        downloaded_size += len(chunk)
+                        if downloaded_size > self.__max_file_size:
+                            raise ValueError(
+                                "PPT download exceeds the maximum allowed size")
+                        f.write(chunk)
+                # Recheck the destination before replacing any existing cache file.
+                local_path = self.__getCachePath(parsed_url)
+                os.replace(temp_path, local_path)
+                temp_path = None
+            finally:
+                response.close()
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
             logger.info(f"File downloaded: {local_path}")
             return local_path
-        else:
-            raise Exception(f"Failed to download file: {response.status_code}")
+        raise requests.exceptions.HTTPError("Too many resource redirects")
+
+    @staticmethod
+    def __validateDownloadUrl(url: str):
+        parsed_url = urlparse(url)
+        hostname = (parsed_url.hostname or "").lower().rstrip(".")
+        if (parsed_url.scheme.lower() != "https" or parsed_url.username
+                or parsed_url.password or not hostname
+                or not (hostname == "zhihuishu.com"
+                        or hostname.endswith(".zhihuishu.com"))):
+            raise ValueError("PPT URL must use HTTPS on a Zhihuishu domain")
+        return parsed_url
+
+    def __getCachePath(self, parsed_url) -> str:
+        file_path = url_unquote(parsed_url.path).lstrip("/\\")
+        if not file_path:
+            raise ValueError("PPT URL does not contain a file path")
+        cache_root = os.path.realpath(os.path.abspath(self.__download_path))
+        local_path = os.path.abspath(os.path.join(cache_root, file_path))
+        resolved_path = os.path.realpath(local_path)
+        try:
+            common_path = os.path.commonpath((cache_root, resolved_path))
+            if os.path.normcase(common_path) != os.path.normcase(cache_root):
+                raise ValueError("PPT cache path escapes the cache directory")
+        except ValueError:
+            raise ValueError("PPT cache path escapes the cache directory") from None
+        return local_path
 
     def __uploadFile(self, filePath: str) -> str:
         filename = os.path.basename(filePath)
@@ -2332,7 +2413,7 @@ class PptToTxt:
             self.__file_cache = {
                 k: v for k, v in self.__file_cache.items() if v['id'] != file_id}
         except Exception as e:
-            logger.error(f"Error deleting file with ID {file_id}: {str(e)}")
+            logger.error(f"Error deleting remote file: {type(e).__name__}")
 
     def __manage_cache(self):
         total_size = sum(file['size'] for file in self.__file_cache.values())
